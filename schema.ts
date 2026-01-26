@@ -52,3 +52,14 @@ export const scheduledJobs = pgTable("scheduled_jobs", {
     status: varchar("status", { length: 20 }).default("pending"),
     createdAt: timestamp("created_at").defaultNow(),
 });
+
+// 6. WhatsApp Accounts Table
+export const whatsappAccounts = pgTable("whatsapp_accounts", {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: uuid("user_id")
+        .references(() => users.id)
+        .unique()
+        .notNull(),
+    phoneNumber: varchar("phone_number", { length: 20 }).unique().notNull(),
+    createdAt: timestamp("created_at").defaultNow(),
+});
