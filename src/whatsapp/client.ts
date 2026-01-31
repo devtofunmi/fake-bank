@@ -23,13 +23,25 @@ export const startWhatsAppClient = () => {
 
   // QR code generation for terminal-based authentication.
   client.on('qr', (qr: string) => {
-    console.log('QR RECEIVED', qr);
+    console.log('QR RECEIVED: Scan this code to continue');
     qrcode.generate(qr, { small: true });
+  });
+
+  client.on('authenticated', () => {
+    console.log('AUTHENTICATED: Session successfully established');
+  });
+
+  client.on('auth_failure', (msg: any) => {
+    console.error('AUTHENTICATION FAILURE:', msg);
+  });
+
+  client.on('loading_screen', (percent: any, message: any) => {
+    console.log('LOADING:', percent, message);
   });
 
   // Ready event triggered upon successful authentication and connection.
   client.on('ready', () => {
-    console.log('Client is ready!');
+    console.log('Client is ready! Listening for messages...');
   });
 
   /**

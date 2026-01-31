@@ -1,16 +1,10 @@
-/**
- * SYSTEM ORCHESTRATOR
- * 
- * Application entry point. Initializes database connectivity, 
- * starts the WhatsApp gateway, and mounts HTTP endpoints.
- */
+import dotenv from 'dotenv';
+dotenv.config();
+
 import express from 'express';
 import { connectDB } from './db';
 import { startWhatsAppClient } from './whatsapp/client';
-import dotenv from 'dotenv';
 import { processAiMessage } from './functions/ai';
-
-dotenv.config();
 
 const app = express();
 app.use(express.json());
