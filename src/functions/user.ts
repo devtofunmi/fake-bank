@@ -15,6 +15,7 @@ import { eq } from 'drizzle-orm';
 export const createUserSchema = z.object({
   phoneNumber: z.string(),
   name: z.string().optional(),
+  email: z.string().email().optional(),
 });
 
 export type CreateUserInput = z.infer<typeof createUserSchema>;
@@ -28,9 +29,33 @@ export async function createUser(input: CreateUserInput) {
   const result = await db.insert(users).values({
     phoneNumber: validated.phoneNumber,
     name: validated.name,
+    email: validated.email,
     balance: 0, // Initial account balance set to ₦0.00.
   }).returning();
   
+  return result[0];
+}
+
+export const updateUserSchema = z.object({
+  phoneNumber: z.string(),
+  name: z.string().optional(),
+  email: z.string().email().optional(),
+});
+
+export async function updateUser(input: z.infer<typeof updateUserSchema>) {
+  const { phoneNumber, name, email } = updateUserSchema.parse(input);
+  
+  const updates: any = {};
+  if (name) updates.name = name;
+  if (email) updates.email = email;
+
+  if (Object.keys(updates).length === 0) return null;
+
+  const result = await db.update(users)
+    .set(updates)
+    .where(eq(users.phoneNumber, phoneNumber))
+    .returning();
+    
   return result[0];
 }
 

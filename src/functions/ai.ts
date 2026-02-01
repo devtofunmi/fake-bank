@@ -2,7 +2,7 @@ import { generateText } from 'ai';
 import { gateway } from '@ai-sdk/gateway';
 import { z } from 'zod';
 import { transferMoney, getBalance, depositMoney } from './wallet';
-import { lookupUser } from './user';
+import { updateUser, lookupUser } from './user';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -12,9 +12,29 @@ dotenv.config();
  */
 export async function processAiMessage(phoneNumber: string, message: string) {
   console.log(`[AI] Processing message for ${phoneNumber}: "${message}"`);
+  
+  // Fetch current user state to inform the AI
+  const user = await lookupUser({ phoneNumber });
+  if (!user) throw new Error('User context missing');
 
   // Define tools as a plain object cast to any
   const bankTools: any = {
+    updateProfile: {
+        description: 'Update the user name or email',
+        parameters: z.object({
+            name: z.string().optional(),
+            email: z.string().email().optional(),
+        }),
+        execute: async ({ name, email }: { name?: string, email?: string }) => {
+            console.log(`[Tool] Updating profile for ${phoneNumber}: Name="${name}", Email="${email}"`);
+            try {
+                await updateUser({ phoneNumber, name, email });
+                return `Success! Profile updated. Name: ${name || user.name}, Email: ${email || user.email}`;
+            } catch (error: any) {
+                return `Error updating profile: ${error.message}`;
+            }
+        }
+    },
     checkBalance: {
       description: 'Get the user current balance',
       parameters: z.object({}),
@@ -80,15 +100,26 @@ export async function processAiMessage(phoneNumber: string, message: string) {
     const { text } = await generateText({
       model: gateway('xai/grok-4.1-fast-non-reasoning'),
       system: `You are a helpful banking assistant named "Jay🤓". 
-      The user's phone number is ${phoneNumber}.
+      
+      CURRENT USER PROFILE:
+      - Phone: ${phoneNumber}
+      - Name: ${user.name || 'Unknown'}
+      - Email: ${user.email || 'Unknown'}
+
+      ONBOARDING RULE (CRITICAL):
+      If the user's Name or Email is 'Unknown', you MUST ask them for these details before processing other banking requests.
+      - If they provide their name, use the 'updateProfile' tool to save it.
+      - If they provide their email, use the 'updateProfile' tool to save it.
+      - Be polite but firm: "I need to set up your profile first."
 
       GREETING RULE:
-      If the user greets you or says "hi", you MUST respond with:
-      "Hello! I'm your bank assistant. How can I help you today? You can ask me to check your balance, transfer money, deposit funds, or look up another user by phone number. What would you like to do? 😊"
+      If the user says "hi" or greets you:
+      - If profile is INCOMPLETE: "Hello! Welcome to Fake Bank. I see you're new here. To get started, may I have your full name?"
+      - If profile is COMPLETE: "Hello ${user.name}! I'm your bank assistant. How can I help you today? (Balance, Transfer, Deposit, Lookup) 😊"
 
       TOOL USAGE RULES:
-      1. For ANY banking request (balance, transfer, deposit, lookup), you MUST call the tool first.
-      2. If you need a phone number and the user didn't provide it, ASK for it.
+      1. For ANY banking request (balance, transfer, deposit, lookup) OR profile update, you MUST call the tool first.
+      2. If you need a phone number/amount and it's missing, ASK for it.
       3. Summarize tool results in a friendly way.`,
       prompt: message,
       tools: bankTools,
