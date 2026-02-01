@@ -1,5 +1,4 @@
 import { generateText } from 'ai';
-import { google } from '@ai-sdk/google';
 import { z } from 'zod';
 import { transferMoney, getBalance, depositMoney } from './wallet';
 import { lookupUser } from './user';
@@ -7,69 +6,98 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-
 /**
- * Processes incoming messages using an AI model to determine intent.
+ * AI AGENT SERVICE
  */
 export async function processAiMessage(phoneNumber: string, message: string) {
-  if (!process.env.AI_GATEWAY_API_KEY) {
-    throw new Error('GOOGLE_GENERATIVE_AI_API_KEY is missing in environmental variables');
-  }
+  console.log(`[AI] Processing message for ${phoneNumber}: "${message}"`);
 
-  const result = await generateText({
-    model: google('xai/grok-4.1-fast-non-reasoning'),
-    system: `You are a helpful bank assistant. The user's phone number is ${phoneNumber}. 
-    You can help with transfers, checking balance, and depositing money. 
-    Always confirm details before performing actions if they are ambiguous.
-    Money is handled as naira/kobo, but users talk in naira.`,
-    prompt: message,
-    tools: {
-      getBalance: {
-        description: 'Get the user balance',
-        parameters: z.object({}),
-        execute: async () => {
+  // Define tools as a plain object cast to any
+  const bankTools: any = {
+    checkBalance: {
+      description: 'Get the user current balance',
+      parameters: z.object({}),
+      execute: async () => {
+        console.log(`[Tool] Checking balance for ${phoneNumber}`);
+        try {
           const res = await getBalance({ phoneNumber });
-          return JSON.stringify(res);
-        },
-      } as any,
-      transfer: {
-        description: 'Transfer money to another user by phone number',
-        parameters: z.object({
-          receiverPhone: z.string().describe('The phone number of the receiver'),
-          amount: z.number().describe('The amount in naira to transfer'),
-        }),
-        execute: async ({ receiverPhone, amount }: { receiverPhone: string; amount: number }) => {
-          try {
-            const res = await transferMoney({ senderPhone: phoneNumber, receiverPhone, amount });
-            return JSON.stringify(res);
-          } catch (error: any) {
-            return JSON.stringify({ error: error.message });
-          }
-        },
-      } as any,
-      deposit: {
-        description: 'Deposit money into the user account',
-        parameters: z.object({
-          amount: z.number().describe('The amount in naira to deposit'),
-        }),
-        execute: async ({ amount }: { amount: number }) => {
-          const res = await depositMoney({ phoneNumber, amount });
-          return JSON.stringify(res);
-        },
-      } as any,
-      lookupUser: {
-        description: 'Lookup a user by phone number',
-        parameters: z.object({
-          phone: z.string(),
-        }),
-        execute: async ({ phone }: { phone: string }) => {
-          const user = await lookupUser({ phoneNumber: phone });
-          return user ? JSON.stringify({ found: true, name: user.name }) : JSON.stringify({ found: false });
-        },
-      } as any,
+          return `Your balance is ₦${res.balance.toLocaleString()}.`;
+        } catch (error: any) {
+          return `Error: ${error.message}`;
+        }
+      },
     },
-    maxSteps: 5,
-  } as any);
+    transferMoney: {
+      description: 'Transfer money to another user',
+      parameters: z.object({
+        targetPhone: z.string().describe('The phone number of the recipient'),
+        amount: z.number().describe('The amount in naira'),
+      }),
+      execute: async ({ targetPhone, amount }: { targetPhone: string; amount: number }) => {
+        console.log(`[Tool] Transferring ₦${amount} from ${phoneNumber} to ${targetPhone}`);
+        try {
+          const res = await transferMoney({ senderPhone: phoneNumber, receiverPhone: targetPhone, amount });
+          return `Success! ₦${amount} sent to ${targetPhone}. New balance: ₦${res.newBalance}`;
+        } catch (error: any) {
+          return `Error Transferring: ${error.message}`;
+        }
+      },
+    },
+    depositFunds: {
+      description: 'Deposit money',
+      parameters: z.object({
+        amount: z.number().describe('Amount in naira'),
+      }),
+      execute: async ({ amount }: { amount: number }) => {
+        console.log(`[Tool] Depositing ₦${amount} for ${phoneNumber}`);
+        try {
+          const res = await depositMoney({ phoneNumber, amount });
+          return `Success! Deposited ₦${amount}. New balance: ₦${res.newBalance}`;
+        } catch (error: any) {
+          return `Error Depositing: ${error.message}`;
+        }
+      },
+    },
+    searchUser: {
+      description: 'Look up a user by phone number',
+      parameters: z.object({
+        targetPhone: z.string().describe('Phone number to check'),
+      }),
+      execute: async ({ targetPhone }: { targetPhone: string }) => {
+        console.log(`[Tool] Looking up user ${targetPhone}`);
+        try {
+          const user = await lookupUser({ phoneNumber: targetPhone });
+          return user ? `User ${user.name || 'Found'} exists.` : `User not found.`;
+        } catch (error: any) {
+          return `Error: ${error.message}`;
+        }
+      },
+    },
+  };
 
-  return result.text;
+  try {
+    const { text } = await generateText({
+      model: 'xai/grok-4.1-fast-non-reasoning',
+      system: `You are a helpful banking assistant named "Jay🤓". 
+      The user's phone number is ${phoneNumber}.
+
+      GREETING RULE:
+      If the user greets you or says "hi", you MUST respond with:
+      "Hello! I'm your bank assistant. How can I help you today? You can ask me to check your balance, transfer money, deposit funds, or look up another user by phone number. What would you like to do? 😊"
+
+      TOOL USAGE RULES:
+      1. For ANY banking request (balance, transfer, deposit, lookup), you MUST call the tool first.
+      2. If you need a phone number and the user didn't provide it, ASK for it.
+      3. Summarize tool results in a friendly way.`,
+      prompt: message,
+      tools: bankTools,
+      maxSteps: 5,
+    } as any);
+
+    console.log(`[AI] Response: "${text}"`);
+    return text;
+  } catch (error: any) {
+    console.error('[AI Error]', error);
+    throw error;
+  }
 }
