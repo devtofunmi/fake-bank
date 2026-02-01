@@ -1,161 +1,166 @@
-import { generateText } from 'ai';
-import { gateway } from '@ai-sdk/gateway';
-import { z } from 'zod';
-import { transferMoney, getBalance, depositMoney } from './wallet';
-import { updateUser, lookupUser } from './user';
-import dotenv from 'dotenv';
-
-dotenv.config();
+import { generateText } from "ai";
+import { config, buildSystemPrompt } from "./config";
+import { createBankingTools, type BankingToolContext } from "./tools";
+import type { ChatMessage } from "./types";
+import { lookupUser } from "./user";
+import {
+  getConversation,
+  addMessage,
+  needsSummarization,
+  setSummaryAndTrim,
+} from "./memory";
 
 /**
- * AI AGENT SERVICE
+ * AI SDK implementation for generating responses
  */
-export async function processAiMessage(phoneNumber: string, message: string) {
-  console.log(`[AI] Processing message for ${phoneNumber}: "${message}"`);
-  
-  // Fetch current user state to inform the AI
+async function generateAISDKResponse(
+  messages: ChatMessage[],
+  phoneNumber: string,
+  existingSummary?: string | null,
+): Promise<string> {
+  // Fetch current user state
   const user = await lookupUser({ phoneNumber });
-  if (!user) throw new Error('User context missing');
+  if (!user) throw new Error("User context missing");
 
-  // Define tools as a plain object cast to any
-  const bankTools: any = {
-    setUserName: {
-        description: 'Set the user full name',
-        parameters: z.object({
-            name: z.string().describe('The full name provided by the user'),
-        }),
-        execute: async (args: { name: string }) => {
-            console.log(`[Tool] setUserName called with args:`, JSON.stringify(args));
-            const { name } = args;
-            if (!name || name === 'undefined') {
-                 return "Error: You called the tool without a valid name. Please try again and extract the name from the user's message.";
-            }
-            console.log(`[Tool] Setting name for ${phoneNumber}: "${name}"`);
-            await updateUser({ phoneNumber, name });
-            return `Success! Name set to: ${name}`;
+  // Build system prompt with user context and summary
+  const systemPrompt = buildSystemPrompt(
+    phoneNumber,
+    user.name,
+    user.email,
+    existingSummary,
+  );
+
+  const bankingTools = createBankingTools(phoneNumber);
+
+  console.log(`[AI] Sending ${messages.length} messages to model`);
+
+  const result = await generateText({
+    model: config.model,
+    system: systemPrompt,
+    messages: messages,
+    tools: bankingTools,
+    maxSteps: config.maxSteps,
+    experimental_context: { phoneNumber } as BankingToolContext,
+  } as any);
+
+  console.log(
+    `[AI] Response: "${result.text}" | Steps: ${result.steps.length}`,
+  );
+
+  // If response is empty but tools were called, extract tool results for response
+  if (!result.text && result.steps.length > 0) {
+    const lastStep = result.steps[result.steps.length - 1];
+    if (lastStep.toolResults && lastStep.toolResults.length > 0) {
+      const toolResultObj = lastStep.toolResults[0] as any;
+      const toolResult = toolResultObj.output || toolResultObj.result || "";
+      console.log(`[AI] Using tool result as response: "${toolResult}"`);
+      // Generate a friendly response based on tool result
+      if (typeof toolResult === "string" && toolResult.startsWith("Success!")) {
+        // Re-fetch user to get updated info
+        const updatedUser = await lookupUser({ phoneNumber });
+        if (updatedUser?.name && !updatedUser?.email) {
+          return `Great, ${updatedUser.name}! Now, what's your email address?`;
+        } else if (updatedUser?.name && updatedUser?.email) {
+          return `Perfect! Your profile is complete, ${updatedUser.name}. How can I help you today? (Balance, Transfer, Deposit, Lookup) 😊`;
         }
-    },
-    setUserEmail: {
-        description: 'Set the user email address',
-        parameters: z.object({
-            email: z.string().email().describe('The email address provided by the user'),
-        }),
-        execute: async (args: { email: string }) => {
-            console.log(`[Tool] setUserEmail called with args:`, JSON.stringify(args));
-             const { email } = args;
-            if (!email || email === 'undefined') {
-                 return "Error: You called the tool without a valid email. Please try again and extract the email from the user's message.";
-            }
-            console.log(`[Tool] Setting email for ${phoneNumber}: "${email}"`);
-            await updateUser({ phoneNumber, email });
-            return `Success! Email set to: ${email}`;
-        }
-    },
-    checkBalance: {
-      description: 'Get the user current balance',
-      parameters: z.object({}),
-      execute: async () => {
-        console.log(`[Tool] Checking balance for ${phoneNumber}`);
-        try {
-          const res = await getBalance({ phoneNumber });
-          return `Your balance is ₦${res.balance.toLocaleString()}.`;
-        } catch (error: any) {
-          return `Error: ${error.message}`;
-        }
-      },
-    },
-    transferMoney: {
-      description: 'Transfer money to another user',
-      parameters: z.object({
-        targetPhone: z.string().describe('The phone number of the recipient'),
-        amount: z.number().describe('The amount in naira'),
-      }),
-      execute: async ({ targetPhone, amount }: { targetPhone: string; amount: number }) => {
-        console.log(`[Tool] Transferring ₦${amount} from ${phoneNumber} to ${targetPhone}`);
-        try {
-          const res = await transferMoney({ senderPhone: phoneNumber, receiverPhone: targetPhone, amount });
-          return `Success! ₦${amount} sent to ${targetPhone}. New balance: ₦${res.newBalance}`;
-        } catch (error: any) {
-          return `Error Transferring: ${error.message}`;
-        }
-      },
-    },
-    depositFunds: {
-      description: 'Deposit money',
-      parameters: z.object({
-        amount: z.number().describe('Amount in naira'),
-      }),
-      execute: async ({ amount }: { amount: number }) => {
-        console.log(`[Tool] Depositing ₦${amount} for ${phoneNumber}`);
-        try {
-          const res = await depositMoney({ phoneNumber, amount });
-          return `Success! Deposited ₦${amount}. New balance: ₦${res.newBalance}`;
-        } catch (error: any) {
-          return `Error Depositing: ${error.message}`;
-        }
-      },
-    },
-    searchUser: {
-      description: 'Look up a user by phone number',
-      parameters: z.object({
-        targetPhone: z.string().describe('Phone number to check'),
-      }),
-      execute: async ({ targetPhone }: { targetPhone: string }) => {
-        console.log(`[Tool] Looking up user ${targetPhone}`);
-        try {
-          const user = await lookupUser({ phoneNumber: targetPhone });
-          return user ? `User ${user.name || 'Found'} exists.` : `User not found.`;
-        } catch (error: any) {
-          return `Error: ${error.message}`;
-        }
-      },
-    },
-  };
-
-  try {
-    const result = await generateText({
-      model: gateway('xai/grok-4.1-fast-non-reasoning'),
-      system: `You are a helpful banking assistant named "Jay🤓". 
-      
-      CURRENT USER PROFILE:
-      - Phone: ${phoneNumber}
-      - Name: ${user.name || 'Unknown'}
-      - Email: ${user.email || 'Unknown'}
-
-      EXTRACTION RULE:
-      When asking for Name or Email, users often reply with just the value (e.g., "John" or "john@gmail.com").
-      You MUST capture this value and pass it to the 'setUserName' or 'setUserEmail' tool.
-      
-      ONBOARDING FLOW:
-      1. IF Name is 'Unknown': Ask "What is your full name?" -> User replies -> Call setUserName(name="...")
-      2. IF Email is 'Unknown': Ask "What is your email?" -> User replies -> Call setUserEmail(email="...")
-
-      EXAMPLES:
-      User: "Olamide"
-      Assistant: [Tool Call] setUserName({ name: "Olamide" })
-
-      User: "My email is test@gmail.com"
-      Assistant: [Tool Call] setUserEmail({ email: "test@gmail.com" })
-
-      GREETING RULE:
-      If the user says "hi" or greets you:
-      - If profile is INCOMPLETE: "Hello! Welcome to Fake Bank. I see you're new here. To get started, may I have your full name?"
-      - If profile is COMPLETE: "Hello ${user.name}! I'm your bank assistant. How can I help you today? (Balance, Transfer, Deposit, Lookup) 😊"
-
-      TOOL USAGE RULES:
-      1. For ANY banking request (balance, transfer, deposit, lookup) OR profile update, you MUST call the tool first.
-      2. If you need a phone number/amount and it's missing, ASK for it.`,
-      prompt: message,
-      tools: bankTools,
-      maxSteps: 5,
-    } as any);
-
-    const { text } = result;
-
-    console.log(`[AI] Response: "${text}" | Steps: ${result.steps.length}`);
-    return text;
-  } catch (error: any) {
-    console.error('[AI Error]', error);
-    throw error;
+        return toolResult;
+      }
+      return String(toolResult);
+    }
   }
+
+  return result.text;
+}
+
+/**
+ * Summarize conversation using AI SDK
+ */
+async function summarizeConversationAISDK(
+  messages: ChatMessage[],
+  existingSummary?: string | null,
+): Promise<string> {
+  // Format messages for summarization
+  const conversationText = messages
+    .map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`)
+    .join("\n");
+
+  // Include existing summary if present
+  let promptContent = conversationText;
+  if (existingSummary) {
+    promptContent = `Existing summary to incorporate:\n${existingSummary}\n\nNew conversation to add:\n${conversationText}`;
+  }
+
+  const { text } = await generateText({
+    model: config.model,
+    system: config.summarizationPrompt,
+    prompt: promptContent,
+  });
+
+  return text;
+}
+
+/**
+ * Main export - generate AI response for banking assistant
+ */
+export async function generateAIResponse(
+  messages: ChatMessage[],
+  phoneNumber: string,
+  existingSummary?: string | null,
+): Promise<string> {
+  console.log(`[AI] Processing message for ${phoneNumber}`);
+  return generateAISDKResponse(messages, phoneNumber, existingSummary);
+}
+
+/**
+ * Summarize a chunk of conversation
+ */
+export async function summarizeConversation(
+  messages: ChatMessage[],
+  existingSummary?: string | null,
+): Promise<string> {
+  return summarizeConversationAISDK(messages, existingSummary);
+}
+
+/**
+ * Legacy function for backward compatibility
+ * Converts single message to ChatMessage array format
+ * NOW WITH MEMORY SUPPORT
+ */
+export async function processAiMessage(
+  phoneNumber: string,
+  message: string,
+): Promise<string> {
+  // Get existing conversation from memory
+  const { messages: history, summary } = getConversation(phoneNumber);
+
+  // Add the new user message to memory
+  addMessage(phoneNumber, "user", message);
+
+  // Build full message history for the AI
+  const messages: ChatMessage[] = [
+    ...history,
+    { role: "user", content: message },
+  ];
+
+  // Generate response with conversation context
+  const response = await generateAIResponse(messages, phoneNumber, summary);
+
+  // Store assistant response in memory
+  if (response) {
+    addMessage(phoneNumber, "assistant", response);
+  }
+
+  // Check if we need to summarize (too many messages)
+  if (needsSummarization(phoneNumber)) {
+    console.log(`[AI] Conversation too long, summarizing...`);
+    const { messages: currentMessages, summary: currentSummary } =
+      getConversation(phoneNumber);
+    const newSummary = await summarizeConversation(
+      currentMessages,
+      currentSummary,
+    );
+    setSummaryAndTrim(phoneNumber, newSummary);
+  }
+
+  return response;
 }
