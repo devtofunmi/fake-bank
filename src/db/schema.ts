@@ -16,6 +16,7 @@ export const users = pgTable('users', {
   phoneNumber: text('phone_number').notNull().unique(),
   
   name: text('name'),
+  email: text('email'),
   
   // Balance stored as INTEGER in KOBO.
   // Using integers instead of floats prevents precision errors common in currency math.
