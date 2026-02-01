@@ -51,6 +51,10 @@ export const startWhatsAppClient = () => {
   client.on('message', async (msg: any) => {
     // Phone number normalization by removing WhatsApp domain suffix.
     const from = msg.from.replace('@c.us', '');
+    
+    // Ignore status updates
+    if (msg.from.includes('status@broadcast')) return;
+
     const text = msg.body;
 
     console.log(`Message from ${from}: ${text}`);

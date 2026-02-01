@@ -19,20 +19,36 @@ export async function processAiMessage(phoneNumber: string, message: string) {
 
   // Define tools as a plain object cast to any
   const bankTools: any = {
-    updateProfile: {
-        description: 'Update the user name or email',
+    setUserName: {
+        description: 'Set the user full name',
         parameters: z.object({
-            name: z.string().optional(),
-            email: z.string().email().optional(),
+            name: z.string().describe('The full name provided by the user'),
         }),
-        execute: async ({ name, email }: { name?: string, email?: string }) => {
-            console.log(`[Tool] Updating profile for ${phoneNumber}: Name="${name}", Email="${email}"`);
-            try {
-                await updateUser({ phoneNumber, name, email });
-                return `Success! Profile updated. Name: ${name || user.name}, Email: ${email || user.email}`;
-            } catch (error: any) {
-                return `Error updating profile: ${error.message}`;
+        execute: async (args: { name: string }) => {
+            console.log(`[Tool] setUserName called with args:`, JSON.stringify(args));
+            const { name } = args;
+            if (!name || name === 'undefined') {
+                 return "Error: You called the tool without a valid name. Please try again and extract the name from the user's message.";
             }
+            console.log(`[Tool] Setting name for ${phoneNumber}: "${name}"`);
+            await updateUser({ phoneNumber, name });
+            return `Success! Name set to: ${name}`;
+        }
+    },
+    setUserEmail: {
+        description: 'Set the user email address',
+        parameters: z.object({
+            email: z.string().email().describe('The email address provided by the user'),
+        }),
+        execute: async (args: { email: string }) => {
+            console.log(`[Tool] setUserEmail called with args:`, JSON.stringify(args));
+             const { email } = args;
+            if (!email || email === 'undefined') {
+                 return "Error: You called the tool without a valid email. Please try again and extract the email from the user's message.";
+            }
+            console.log(`[Tool] Setting email for ${phoneNumber}: "${email}"`);
+            await updateUser({ phoneNumber, email });
+            return `Success! Email set to: ${email}`;
         }
     },
     checkBalance: {
@@ -97,7 +113,7 @@ export async function processAiMessage(phoneNumber: string, message: string) {
   };
 
   try {
-    const { text } = await generateText({
+    const result = await generateText({
       model: gateway('xai/grok-4.1-fast-non-reasoning'),
       system: `You are a helpful banking assistant named "Jay🤓". 
       
@@ -106,11 +122,20 @@ export async function processAiMessage(phoneNumber: string, message: string) {
       - Name: ${user.name || 'Unknown'}
       - Email: ${user.email || 'Unknown'}
 
-      ONBOARDING RULE (CRITICAL):
-      If the user's Name or Email is 'Unknown', you MUST ask them for these details before processing other banking requests.
-      - If they provide their name, use the 'updateProfile' tool to save it.
-      - If they provide their email, use the 'updateProfile' tool to save it.
-      - Be polite but firm: "I need to set up your profile first."
+      EXTRACTION RULE:
+      When asking for Name or Email, users often reply with just the value (e.g., "John" or "john@gmail.com").
+      You MUST capture this value and pass it to the 'setUserName' or 'setUserEmail' tool.
+      
+      ONBOARDING FLOW:
+      1. IF Name is 'Unknown': Ask "What is your full name?" -> User replies -> Call setUserName(name="...")
+      2. IF Email is 'Unknown': Ask "What is your email?" -> User replies -> Call setUserEmail(email="...")
+
+      EXAMPLES:
+      User: "Olamide"
+      Assistant: [Tool Call] setUserName({ name: "Olamide" })
+
+      User: "My email is test@gmail.com"
+      Assistant: [Tool Call] setUserEmail({ email: "test@gmail.com" })
 
       GREETING RULE:
       If the user says "hi" or greets you:
@@ -119,15 +144,30 @@ export async function processAiMessage(phoneNumber: string, message: string) {
 
       TOOL USAGE RULES:
       1. For ANY banking request (balance, transfer, deposit, lookup) OR profile update, you MUST call the tool first.
-      2. If you need a phone number/amount and it's missing, ASK for it.
-      3. Summarize tool results in a friendly way.`,
+      2. If you need a phone number/amount and it's missing, ASK for it.`,
       prompt: message,
       tools: bankTools,
       maxSteps: 5,
     } as any);
 
-    console.log(`[AI] Response: "${text}"`);
-    return text;
+    let finalText = result.text;
+
+    // WORKAROUND: If the model stops early after a tool call (SDK bug/quirk with xAI), manually fetch the final response.
+    if (!finalText && result.steps.length > 0) {
+       console.log('[AI] Model stopped early after tool execution. Triggering follow-up generation...');
+       const followUp = await generateText({
+         model: gateway('xai/grok-4.1-fast-non-reasoning'),
+         system: `You are a helpful banking assistant named "Jay🤓". 
+         Review the tool results above and provide a friendly summary to the user.`,
+         messages: result.response.messages,
+         tools: bankTools, 
+       } as any);
+       finalText = followUp.text;
+       console.log(`[AI] Follow-up response: "${finalText}"`);
+    }
+
+    console.log(`[AI] Response: "${finalText}" | Steps: ${result.steps.length}`);
+    return finalText;
   } catch (error: any) {
     console.error('[AI Error]', error);
     throw error;
