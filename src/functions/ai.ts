@@ -1,4 +1,5 @@
 import { generateText } from 'ai';
+import { gateway } from '@ai-sdk/gateway';
 import { z } from 'zod';
 import { transferMoney, getBalance, depositMoney } from './wallet';
 import { lookupUser } from './user';
@@ -77,7 +78,7 @@ export async function processAiMessage(phoneNumber: string, message: string) {
 
   try {
     const { text } = await generateText({
-      model: 'xai/grok-4.1-fast-non-reasoning',
+      model: gateway('xai/grok-4.1-fast-non-reasoning'),
       system: `You are a helpful banking assistant named "Jay🤓". 
       The user's phone number is ${phoneNumber}.
 
