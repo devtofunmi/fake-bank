@@ -150,24 +150,10 @@ export async function processAiMessage(phoneNumber: string, message: string) {
       maxSteps: 5,
     } as any);
 
-    let finalText = result.text;
+    const { text } = result;
 
-    // WORKAROUND: If the model stops early after a tool call (SDK bug/quirk with xAI), manually fetch the final response.
-    if (!finalText && result.steps.length > 0) {
-       console.log('[AI] Model stopped early after tool execution. Triggering follow-up generation...');
-       const followUp = await generateText({
-         model: gateway('xai/grok-4.1-fast-non-reasoning'),
-         system: `You are a helpful banking assistant named "Jay🤓". 
-         Review the tool results above and provide a friendly summary to the user.`,
-         messages: result.response.messages,
-         tools: bankTools, 
-       } as any);
-       finalText = followUp.text;
-       console.log(`[AI] Follow-up response: "${finalText}"`);
-    }
-
-    console.log(`[AI] Response: "${finalText}" | Steps: ${result.steps.length}`);
-    return finalText;
+    console.log(`[AI] Response: "${text}" | Steps: ${result.steps.length}`);
+    return text;
   } catch (error: any) {
     console.error('[AI Error]', error);
     throw error;
